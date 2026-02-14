@@ -116,10 +116,17 @@ defmodule OpenaiEx.HttpFinch do
     sanitized_headers =
       Enum.map(headers, fn
         {key, value} when is_binary(key) ->
-          if String.downcase(key) == "authorization" and String.starts_with?(value, "Bearer ") do
-            {key, "Bearer [REDACTED]"}
-          else
-            {key, value}
+          key_down = String.downcase(key)
+
+          cond do
+            key_down == "authorization" and String.starts_with?(value, "Bearer ") ->
+              {key, "Bearer [REDACTED]"}
+
+            key_down in ["x-api-key", "api-key"] ->
+              {key, "[REDACTED]"}
+
+            true ->
+              {key, value}
           end
 
         other ->

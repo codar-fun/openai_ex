@@ -6,13 +6,13 @@ defmodule Example.CLI do
   designed to be a more flexible alternative to Chat Completions.
   """
 
-  alias OpenaiEx.{Chat.Completions, ChatMessage, Responses}
+  alias OpenaiEx.{Anthropic.Messages, Chat.Completions, ChatMessage, Responses}
 
   @default_model "gpt-5-nano"
 
   @doc """
-  Creates an OpenAI client from the OPENAI_API_KEY environment variable.
-  If OPENAI_API_ENDPOINT is set, it is used as the OpenAI base URL.
+  Creates an API client from environment variables.
+  If OPENAI_API_ENDPOINT points to Anthropic, builds an Anthropic-configured client.
   """
   def new_client do
     api_key = System.get_env("OPENAI_API_KEY")
@@ -21,11 +21,19 @@ defmodule Example.CLI do
     if is_nil(api_key) or api_key == "" do
       {:error, "OPENAI_API_KEY environment variable not set"}
     else
-      openai =
-        OpenaiEx.new(api_key)
-        |> maybe_with_api_endpoint(api_endpoint)
+      openai = build_client(api_key, api_endpoint)
 
       {:ok, openai}
+    end
+  end
+
+  defp build_client(api_key, api_endpoint) do
+    if is_binary(api_endpoint) and api_endpoint != "" and
+         String.contains?(String.downcase(api_endpoint), "anthropic.com") do
+      OpenaiEx.new_anthropic(api_key, base_url: api_endpoint)
+    else
+      OpenaiEx.new(api_key)
+      |> maybe_with_api_endpoint(api_endpoint)
     end
   end
 
@@ -117,6 +125,28 @@ defmodule Example.CLI do
     ask_chat_completion(openai, prompt, model)
   end
 
+  @doc """
+  Ask a question using Anthropic's Messages API (non-streaming).
+  """
+  def ask_message(openai, prompt, opts \\ []) do
+    model = Keyword.get(opts, :model, default_model(openai))
+
+    request =
+      Messages.new(%{
+        model: model,
+        max_tokens: 1024,
+        messages: [%{role: "user", content: prompt}]
+      })
+
+    case Messages.create(openai, request) do
+      {:ok, response} ->
+        {:ok, extract_anthropic_message_text(response)}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
   defp process_stream(stream) do
     stream
     |> Stream.flat_map(fn
@@ -184,10 +214,16 @@ Error event: #{inspect(event)}")
   defp get_text_content(_), do: nil
 
   defp default_model(%OpenaiEx{base_url: base_url}) when is_binary(base_url) do
-    if String.contains?(base_url, "moonshot.cn"), do: "moonshot-v1-8k", else: @default_model
+    case System.get_env("OPENAI_API_MODEL") do
+      model when is_binary(model) and model != "" ->
+        model
+
+      _ ->
+        if String.contains?(base_url, "moonshot.cn"), do: "moonshot-v1-8k", else: @default_model
+    end
   end
 
-  defp default_model(_), do: @default_model
+  defp default_model(_), do: System.get_env("OPENAI_API_MODEL") || @default_model
 
   defp fallback_to_chat_completions?(%OpenaiEx.Error{status_code: 404, body: body})
        when is_map(body) do
@@ -269,13 +305,21 @@ Error event: #{inspect(event)}")
   defp extract_content_part(%{text: text}) when is_binary(text), do: text
   defp extract_content_part(_), do: ""
 
+  defp extract_anthropic_message_text(%{"content" => content}) when is_list(content),
+    do: extract_content_parts(content)
+
+  defp extract_anthropic_message_text(%{content: content}) when is_list(content),
+    do: extract_content_parts(content)
+
+  defp extract_anthropic_message_text(response), do: inspect(response)
+
   @doc """
   Run the CLI with command line arguments.
   """
   def run(args) do
     {options, prompts, invalid_options} =
       OptionParser.parse(args,
-        switches: [completion: :boolean, response: :boolean, model: :string]
+        switches: [completion: :boolean, response: :boolean, message: :boolean]
       )
 
     cond do
@@ -283,8 +327,8 @@ Error event: #{inspect(event)}")
         print_usage()
         {:error, :invalid_options}
 
-      options[:completion] && options[:response] ->
-        IO.puts(:stderr, "Error: --completion and --response cannot be used together.")
+      Enum.count([options[:completion], options[:response], options[:message]], & &1) > 1 ->
+        IO.puts(:stderr, "Error: choose only one of --completion, --response, or --message.")
         print_usage()
         {:error, :conflicting_options}
 
@@ -294,8 +338,8 @@ Error event: #{inspect(event)}")
 
       true ->
         prompt = Enum.join(prompts, " ")
-        api_mode = if options[:completion], do: :completion, else: :response
-        request_opts = if options[:model], do: [model: options[:model]], else: []
+        api_mode = resolve_api_mode(options)
+        request_opts = []
 
         case new_client() do
           {:ok, openai} ->
@@ -339,10 +383,36 @@ Error event: #{inspect(event)}")
     end
   end
 
+  defp run_prompt(openai, prompt, :message, request_opts) do
+    case ask_message(openai, prompt, request_opts) do
+      {:ok, output} ->
+        IO.puts("\nResponse: #{output}\n")
+        :ok
+
+      {:error, %OpenaiEx.Error{} = error} ->
+        IO.puts(:stderr, "\nError: #{Exception.message(error)}")
+        {:error, error}
+
+      {:error, error} ->
+        IO.puts(:stderr, "\nError: #{inspect(error)}")
+        {:error, error}
+    end
+  end
+
+  defp resolve_api_mode(options) do
+    cond do
+      options[:message] -> :message
+      options[:completion] -> :completion
+      true -> :response
+    end
+  end
+
   defp print_usage do
-    IO.puts("Usage: example_cli [--response | --completion] [--model MODEL] <prompt>")
+    IO.puts("Usage: example_cli [--response | --completion | --message] <prompt>")
     IO.puts("  --response    Use the Responses API (default)")
     IO.puts("  --completion  Use the Chat Completions API")
+    IO.puts("  --message     Use Anthropic's Messages API")
+    IO.puts("\nSet OPENAI_API_MODEL to choose the model.")
     IO.puts("\nSet OPENAI_API_KEY environment variable before running.")
   end
 end

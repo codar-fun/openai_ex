@@ -44,6 +44,39 @@ defmodule OpenaiEx do
   end
 
   @doc """
+  Creates a new OpenaiEx struct configured for Anthropic's API.
+
+  Options:
+  - `:base_url` (default: `"https://api.anthropic.com"`)
+  - `:version` (default: `"2023-06-01"`)
+  - `:betas` (default: `[]`) list of anthropic beta flags
+  """
+  def new_anthropic(api_key, opts \\ []) when is_binary(api_key) and is_list(opts) do
+    base_url = Keyword.get(opts, :base_url, "https://api.anthropic.com")
+    version = Keyword.get(opts, :version, "2023-06-01")
+    betas = Keyword.get(opts, :betas, [])
+
+    beta_headers =
+      case betas do
+        [] ->
+          []
+
+        [_ | _] ->
+          [{"anthropic-beta", Enum.join(betas, ",")}]
+      end
+
+    %OpenaiEx{
+      token: api_key,
+      base_url: base_url,
+      _http_headers:
+        [
+          {"x-api-key", api_key},
+          {"anthropic-version", version}
+        ] ++ beta_headers
+    }
+  end
+
+  @doc """
   Create file parameter struct for use in multipart requests.
 
   OpenAI API has endpoints which need a file parameter, such as Files and Audio.
