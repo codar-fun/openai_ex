@@ -111,16 +111,46 @@ defmodule OpenaiEx.Error do
 
   defp status_error(kind, status_code, response, body) when is_map(body) do
     error = body["error"]
+    message = extract_error_message(error, body)
+    error_body = extract_error_body(error, body)
 
     exception(
       kind: kind,
-      message: error["message"],
+      message: message,
       response: response,
-      body: error,
+      body: error_body,
       status_code: status_code,
       request_id: get_in(response.headers, [Access.filter(&(elem(&1, 0) == "x-request-id")), Access.elem(1)])
     )
   end
+
+  defp status_error(kind, status_code, response, body) do
+    exception(
+      kind: kind,
+      message: inspect(body),
+      response: response,
+      body: body,
+      status_code: status_code,
+      request_id: get_in(response.headers, [Access.filter(&(elem(&1, 0) == "x-request-id")), Access.elem(1)])
+    )
+  end
+
+  defp extract_error_message(error, body) when is_map(error) do
+    error["message"] || body["message"] || inspect(error)
+  end
+
+  defp extract_error_message(error, body) when is_binary(error) do
+    body["message"] || error
+  end
+
+  defp extract_error_message(_error, body) when is_map(body) do
+    body["message"] || inspect(body)
+  end
+
+  defp extract_error_message(_error, body), do: inspect(body)
+
+  defp extract_error_body(error, _body) when is_map(error), do: error
+  defp extract_error_body(_error, body), do: body
 
   def sse_timeout_error() do
     exception(kind: :sse_timeout_error, message: "SSE next chunk timed out.")
