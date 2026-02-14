@@ -109,6 +109,14 @@ defmodule Example.CLI do
     end
   end
 
+  @doc """
+  Ask a question using the Chat Completions API (non-streaming).
+  """
+  def ask_completion(openai, prompt, opts \\ []) do
+    model = Keyword.get(opts, :model, default_model(openai))
+    ask_chat_completion(openai, prompt, model)
+  end
+
   defp process_stream(stream) do
     stream
     |> Stream.flat_map(fn
@@ -265,34 +273,76 @@ Error event: #{inspect(event)}")
   Run the CLI with command line arguments.
   """
   def run(args) do
-    case args do
-      [] ->
-        IO.puts("Usage: example_cli <prompt>")
-        IO.puts("\nSet OPENAI_API_KEY environment variable before running.")
+    {options, prompts, invalid_options} =
+      OptionParser.parse(args,
+        switches: [completion: :boolean, response: :boolean, model: :string]
+      )
+
+    cond do
+      invalid_options != [] ->
+        print_usage()
+        {:error, :invalid_options}
+
+      options[:completion] && options[:response] ->
+        IO.puts(:stderr, "Error: --completion and --response cannot be used together.")
+        print_usage()
+        {:error, :conflicting_options}
+
+      prompts == [] ->
+        print_usage()
         {:error, :no_args}
 
-      prompts ->
+      true ->
         prompt = Enum.join(prompts, " ")
+        api_mode = if options[:completion], do: :completion, else: :response
+        request_opts = if options[:model], do: [model: options[:model]], else: []
 
         case new_client() do
           {:ok, openai} ->
-            case ask_stream(openai, prompt) do
-              {:ok, _output} ->
-                :ok
-
-              {:error, %OpenaiEx.Error{} = error} ->
-                IO.puts(:stderr, "\nError: #{Exception.message(error)}")
-                {:error, error}
-
-              {:error, error} ->
-                IO.puts(:stderr, "\nError: #{inspect(error)}")
-                {:error, error}
-            end
+            run_prompt(openai, prompt, api_mode, request_opts)
 
           {:error, message} ->
             IO.puts(:stderr, "Error: #{message}")
             {:error, :no_api_key}
         end
     end
+  end
+
+  defp run_prompt(openai, prompt, :completion, request_opts) do
+    case ask_completion(openai, prompt, request_opts) do
+      {:ok, output} ->
+        IO.puts("\nResponse: #{output}\n")
+        :ok
+
+      {:error, %OpenaiEx.Error{} = error} ->
+        IO.puts(:stderr, "\nError: #{Exception.message(error)}")
+        {:error, error}
+
+      {:error, error} ->
+        IO.puts(:stderr, "\nError: #{inspect(error)}")
+        {:error, error}
+    end
+  end
+
+  defp run_prompt(openai, prompt, :response, request_opts) do
+    case ask_stream(openai, prompt, request_opts) do
+      {:ok, _output} ->
+        :ok
+
+      {:error, %OpenaiEx.Error{} = error} ->
+        IO.puts(:stderr, "\nError: #{Exception.message(error)}")
+        {:error, error}
+
+      {:error, error} ->
+        IO.puts(:stderr, "\nError: #{inspect(error)}")
+        {:error, error}
+    end
+  end
+
+  defp print_usage do
+    IO.puts("Usage: example_cli [--response | --completion] [--model MODEL] <prompt>")
+    IO.puts("  --response    Use the Responses API (default)")
+    IO.puts("  --completion  Use the Chat Completions API")
+    IO.puts("\nSet OPENAI_API_KEY environment variable before running.")
   end
 end
